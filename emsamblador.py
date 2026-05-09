@@ -1,4 +1,3 @@
-import re
 import sys
 
 # =========================================================
@@ -69,11 +68,7 @@ TABLE_U = {
     "lui":   {"op": 0x37}, # Load Upper Immediate
 }
 
-LABEL_DEF_RE = re.compile(r"^\s*([A-Za-z_.$][\w.$]*):\s*(.*)$")
-PCREL_HI_RE = re.compile(r"(?P<label>[A-Za-z_.$][\w.$]*)\[31:12\]")
-PCREL_LO_RE = re.compile(r"(?P<label>[A-Za-z_.$][\w.$]*)\[11:0\]")
-
-# 3. FUNCIONES AUXILIARES  
+# 3. FUNCIONES AUXILIARES
 def get_reg(name):
     name = str(name).lower().replace(',', '').strip()
     if name in REG_MAP: return REG_MAP[name]
@@ -85,18 +80,9 @@ def clean_imm(value, bits=12):
     mask = (1 << bits) - 1
     return int(value) & mask
 
-def calcular_pcrel_hi_lo(destino, pc_base):
-    """
-    Divide un offset relativo al PC en la pareja usada por AUIPC + instrucción tipo I.
-    """
-    offset = destino - pc_base
-    hi20 = (offset + 0x800) >> 12
-    lo12 = offset - (hi20 << 12)
-    return hi20, lo12
-
-# 4. FUNCIONES DE ENSAMBLADO (BIT-PACKING)   
-def assemble_r(mnemonic, rd, rs1, rs2):      
-    data = TABLE_R[mnemonic]                 
+# 4. FUNCIONES DE ENSAMBLADO (BIT-PACKING)
+def assemble_r(mnemonic, rd, rs1, rs2):
+    data = TABLE_R[mnemonic]
     inst = (data["f7"] << 25) | (rs2 << 20) | (rs1 << 15) | (data["f3"] << 12) | (rd << 7) | OPCODE_R
     return inst
 
@@ -216,7 +202,7 @@ def expandir_pseudo_instruccion(linea):
     partes = linea.replace(',', ' ').split()
     if not partes:
         return [linea]
- #  addi    sp,sp,0
+
     op = partes[0]
     args = partes[1:]
 
@@ -325,8 +311,7 @@ def assemble_line(line):
     if not line: return None
     
     # Normalizar separadores: comas y paréntesis a espacios
-    line_clean = line.replace(',', ' ').replace('(', ' ').replace(')', ' ').replace('[', ' ').replace(']', ' ')
-    tokens = line_clean.split()
+    tokens = line.replace(',', ' ').replace('(', ' ').replace(')', ' ').split()
     mnemonic = tokens[0].lower()
     
     try:
@@ -350,8 +335,6 @@ def assemble_line(line):
         elif mnemonic == "jalr":
             # jalr rd, rs1, imm
             return assemble_i(mnemonic, get_reg(tokens[1]), get_reg(tokens[2]), tokens[3], OPCODE_JALR)
-        elif mnemonic == "ebreak":
-            return 0x00100073  # Valor hexadecimal fijo para ebreak en RV32I 
         else:
             print(f"Instrucción desconocida: {mnemonic}")
             return None
@@ -374,13 +357,13 @@ def resolver_etiquetas(instrucciones):
         if not linea: continue
 
         # Si encontramos dos puntos, es una etiqueta (ej. ".L3:")
-        etiqueta_match = LABEL_DEF_RE.match(linea)
-        if etiqueta_match:
-            nombre_etiqueta = etiqueta_match.group(1).strip()
+        if ":" in linea:
+            partes = linea.split(":")
+            nombre_etiqueta = partes[0].strip()
             tabla_etiquetas[nombre_etiqueta] = pc
             
             # Si hay código en la misma línea (ej. ".L2: addi a0, a0, 1")
-            resto = etiqueta_match.group(2).strip()
+            resto = partes[1].strip()
             if resto:
                 lineas_limpias.append(resto)
                 pc += 4 # Avanza 4 bytes
@@ -391,35 +374,8 @@ def resolver_etiquetas(instrucciones):
     # --- PASADA 2: Cambiar el nombre de la etiqueta por la distancia en bytes ---
     codigo_final = []
     pc_actual = 0
-    ultimo_pcrel_hi = None
     
     for linea in lineas_limpias:
-        hi_match = PCREL_HI_RE.search(linea)
-        lo_match = PCREL_LO_RE.search(linea)
-
-        if hi_match:
-            etiqueta = hi_match.group("label")
-            ultimo_pcrel_hi = None
-            if etiqueta in tabla_etiquetas:
-                hi20, _ = calcular_pcrel_hi_lo(tabla_etiquetas[etiqueta], pc_actual)
-                linea = PCREL_HI_RE.sub(str(hi20), linea, count=1)
-                ultimo_pcrel_hi = {"label": etiqueta, "pc": pc_actual}
-        elif lo_match:
-            etiqueta = lo_match.group("label")
-            if etiqueta in tabla_etiquetas:
-                pc_base = pc_actual
-                if (
-                    ultimo_pcrel_hi
-                    and ultimo_pcrel_hi["label"] == etiqueta
-                    and ultimo_pcrel_hi["pc"] == pc_actual - 4
-                ):
-                    pc_base = ultimo_pcrel_hi["pc"]
-                _, lo12 = calcular_pcrel_hi_lo(tabla_etiquetas[etiqueta], pc_base)
-                linea = PCREL_LO_RE.sub(str(lo12), linea, count=1)
-            ultimo_pcrel_hi = None
-        else:
-            ultimo_pcrel_hi = None
-
         tokens = linea.replace(',', ' ').split()
         if not tokens: continue
         
@@ -484,7 +440,7 @@ def leer_archivo_asm(ruta):
 # =========================================================
 if __name__ == "__main__":
     # 1. Elegir qué archivo leer
-  
+    # Si lo ejecutas desde consola como: python emsamblador.py mi_codigo.s
     if len(sys.argv) > 1:
         archivo_entrada = sys.argv[1]
     else:
@@ -492,7 +448,6 @@ if __name__ == "__main__":
         archivo_entrada = "test1.txt" 
         
     # 2. Leer el archivo
-    
     mi_codigo_asm = leer_archivo_asm(archivo_entrada)
     
     # Si el archivo estaba vacío o no existe, detenemos el programa
