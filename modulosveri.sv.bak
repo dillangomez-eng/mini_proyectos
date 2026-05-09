@@ -1,0 +1,225 @@
+module PC(
+    input  logic clk, 
+    input  logic reset, 
+    input  logic [31:0] next_pc, 
+    output logic [31:0] pc
+);
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset)
+            pc <= 32'h00000000;
+        else
+            pc <= next_pc;
+    end
+endmodule
+
+module ImmGen(
+    input  logic [31:0] inst, 
+    output logic [31:0] imm32
+);
+    always_comb begin
+        case (inst[6:0])
+            7'h13: imm32 = {{20{inst[31]}}, inst[31:20]};           // Tipo I (addi, etc)
+            7'h03: imm32 = {{20{inst[31]}}, inst[31:20]};           // Tipo I (load)
+            7'h23: imm32 = {{20{inst[31]}}, inst[31:25], inst[11:7]}; // Tipo S (sw)
+            7'h63: imm32 = {{19{inst[31]}}, inst[31], inst[7], inst[30:25], inst[11:8], 1'b0}; // Tipo B
+            7'h37: imm32 = {inst[31:12], 12'b0};                    // Tipo U (lui)
+            7'h6F: imm32 = {{11{inst[31]}}, inst[31], inst[19:12], inst[20], inst[30:21], 1'b0}; // Tipo J
+            default: imm32 = 32'b0;
+        endcase
+    end
+endmodule
+
+module RegisterFile(
+    input  logic clk, 
+    input  logic regWrite, 
+    input  logic [4:0] rs1, 
+    input  logic [4:0] rs2, 
+    input  logic [4:0] rd, 
+    input  logic [31:0] writeData, 
+    output logic [31:0] readData1, 
+    output logic [31:0] readData2
+);
+    logic [31:0] registers [31:0];
+
+    // Lectura asíncrona combinacional
+    assign readData1 = (rs1 == 5'b0) ? 32'b0 : registers[rs1];
+    assign readData2 = (rs2 == 5'b0) ? 32'b0 : registers[rs2];
+
+    // Escritura síncrona
+    always_ff @(posedge clk) begin
+        if (regWrite && rd != 5'b0)
+            registers[rd] <= writeData;
+    end
+endmodule
+
+module ALU(
+    input  logic [31:0] A, 
+    input  logic [31:0] B, 
+    input  logic [3:0] aluControl, 
+    output logic [31:0] result, 
+    output logic zero
+);
+    always_comb begin
+        case (aluControl)
+            4'b0000: result = A + B;       // Sumar
+            4'b0001: result = A - B;       // Restar
+            4'b0010: result = A & B;       // AND
+            4'b0011: result = A | B;       // OR
+            4'b0100: result = A ^ B;       // XOR
+            4'b0101: result = A << B[4:0]; // SLL
+            4'b0110: result = A >> B[4:0]; // SRL
+            4'b0111: result = $signed(A) >>> B[4:0]; // SRA
+            default: result = 32'b0;
+        endcase
+    end
+
+    assign zero = (result == 32'b0);
+endmodule
+
+module ControlUnit(
+    input  logic [6:0] opcode, 
+    output logic branch, memRead, memToReg, memWrite, aluSrc, regWrite, jump,
+    output logic [1:0] aluOp
+);
+    always_comb begin
+        // Valores por defecto
+        branch = 0; memRead = 0; memToReg = 0; aluOp = 2'b00; 
+        memWrite = 0; aluSrc = 0; regWrite = 0; jump = 0;
+
+        case (opcode)
+            7'h33: begin regWrite = 1; aluOp = 2'b10; end // Tipo R
+            7'h13: begin regWrite = 1; aluSrc = 1; aluOp = 2'b10; end // Tipo I
+            7'h03: begin regWrite = 1; aluSrc = 1; memRead = 1; memToReg = 1; end // lw
+            7'h23: begin aluSrc = 1; memWrite = 1; end // sw
+            7'h63: begin branch = 1; aluOp = 2'b01; end // branch
+            7'h6F: begin regWrite = 1; jump = 1; end // jal
+            default: ; 
+        endcase
+    end
+endmodule
+
+module ALUControl(
+    input  logic [1:0] aluOp, 
+    input  logic [2:0] funct3, 
+    input  logic [6:0] funct7, 
+    output logic [3:0] aluControl
+);
+    always_comb begin
+        case (aluOp)
+            2'b00: aluControl = 4'b0000; // Suma (Loads/Stores)
+            2'b01: aluControl = 4'b0001; // Resta (Branches)
+            2'b10: begin // Tipo R o I
+                case (funct3)
+                    3'h0: aluControl = (funct7[5]) ? 4'b0001 : 4'b0000;
+                    3'h7: aluControl = 4'b0010;
+                    3'h6: aluControl = 4'b0011;
+                    3'h4: aluControl = 4'b0100;
+                    3'h1: aluControl = 4'b0101;
+                    3'h5: aluControl = (funct7[5]) ? 4'b0111 : 4'b0110;
+                    default: aluControl = 4'b0000;
+                endcase
+            end
+            default: aluControl = 4'b0000;
+        endcase
+    end
+endmodule
+
+module DataMemory(
+    input  logic clk,
+    input  logic memWrite,
+    input  logic memRead,
+    input  logic [31:0] address,
+    input  logic [31:0] writeData,
+    output logic [31:0] readData
+);
+    logic [31:0] ram [0:255];
+
+    always_ff @(posedge clk) begin
+        if (memWrite)
+            ram[address >> 2] <= writeData;
+    end
+
+    assign readData = memRead ? ram[address >> 2] : 32'b0;
+endmodule
+
+module RISCV_Core(
+    input  logic clk,           // Conectar a KEY0 en Pin Planner
+    input  logic reset,         // Conectar a SW0 en Pin Planner
+    output logic [9:0] LEDR,    // Conectar a LEDR0-LEDR9
+    output logic [6:0] HEX0,    // Conectar a HEX0_0 a HEX0_6
+    output logic [6:0] HEX1     // Conectar a HEX1_0 a HEX1_1
+);
+    // --- Señales Internas ---
+    logic [31:0] pc, next_pc, inst, imm32, readData1, readData2, aluResult, memReadData, writeData;
+    logic [3:0]  alu_control;
+    logic [1:0]  aluOp;
+    logic regWrite, aluSrc, memRead, memToReg, branch, zero, jump;
+    
+    // --- Lógica del PC y Saltos ---
+    logic is_beq, is_bne, take_branch;
+    assign is_beq = (inst[14:12] == 3'b000); 
+    assign is_bne = (inst[14:12] == 3'b001); 
+    assign take_branch = branch && ((is_beq && zero) || (is_bne && !zero));
+    
+    assign next_pc = (jump || take_branch) ? (pc + imm32) : (pc + 4);
+    
+    PC pc_unit(clk, reset, next_pc, pc);
+
+    // --- Memoria de Instrucciones (ROM) ---
+    logic [31:0] rom [0:255]; 
+    initial begin
+        $readmemh("programa.hex", rom); // Carga tu archivo .hex
+    end
+    assign inst = rom[pc >> 2];
+
+    // --- Instancias de Módulos ---
+    ControlUnit  ctrl(inst[6:0], branch, memRead, memToReg, aluOp, memWrite, aluSrc, regWrite, jump);
+    ImmGen       igen(inst, imm32);
+    RegisterFile regs(clk, reset, regWrite, inst[19:15], inst[24:20], inst[11:7], writeData, readData1, readData2);
+    ALUControl   actrl(aluOp, inst[14:12], inst[31], alu_control);
+    ALU          alu_u(readData1, (aluSrc ? imm32 : readData2), alu_control, aluResult, zero);
+    DataMemory   dmem(clk, memWrite, memRead, aluResult, readData2, memReadData);
+
+    assign writeData = memToReg ? memReadData : aluResult;
+
+    // =========================================================
+    // MAPEO A PERIFÉRICOS (Pruebas en FPGA)
+    // =========================================================
+    
+    // 1. Mostrar los 10 bits bajos del resultado de la ALU en los LEDs
+    assign LEDR = aluResult[9:0];
+
+    // 2. Mostrar el valor del PC en los Displays (HEX1 y HEX0)
+    // Mostramos los 8 bits bajos del PC (dirección actual)
+    decodificador_7seg dec0(pc[3:0], HEX0); // Dígito hexadecimal bajo
+    decodificador_7seg dec1(pc[7:4], HEX1); // Dígito hexadecimal alto
+
+endmodule
+
+// Módulo auxiliar para convertir binario a 7 segmentos
+module decodificador_7seg(
+    input  logic [3:0] binario,
+    output logic [6:0] segmentos
+);
+    always_comb begin
+        case (binario)
+            4'h0: segmentos = 7'b1000000;
+            4'h1: segmentos = 7'b1111001;
+            4'h2: segmentos = 7'b0100100;
+            4'h3: segmentos = 7'b0110000;
+            4'h4: segmentos = 7'b0011001;
+            4'h5: segmentos = 7'b0010010;
+            4'h6: segmentos = 7'b0000010;
+            4'h7: segmentos = 7'b1111000;
+            4'h8: segmentos = 7'b0000000;
+            4'h9: segmentos = 7'b0010000;
+            4'hA: segmentos = 7'b0001000;
+            4'hB: segmentos = 7'b0000011;
+            4'hC: segmentos = 7'b1000110;
+            4'hD: segmentos = 7'b0100001;
+            4'hE: segmentos = 7'b0000110;
+            4'hF: segmentos = 7'b0001110;
+            default: segmentos = 7'b1111111;
+        endcase
+    end
+endmodule
